@@ -1,12 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    appDir: true,
-  },
   images: {
     domains: ['localhost'],
   },
-  // Optimización para Vercel
+  // Optimización para despliegues en Docker/Vercel
   output: 'standalone',
 }
 

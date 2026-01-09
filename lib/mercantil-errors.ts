@@ -147,7 +147,7 @@ export class MercantilErrorHandler {
    * @param context - Contexto adicional del error
    * @returns Error procesado con información para el usuario
    */
-  static processError(error: any, context?: string): MercantilError {
+  static processError(error: any, context?: any): MercantilError {
     // Si es un error conocido
     if (error.code && MERCANTIL_ERROR_CODES[error.code]) {
       return MERCANTIL_ERROR_CODES[error.code];

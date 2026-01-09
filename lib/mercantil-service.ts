@@ -143,7 +143,7 @@ export class MercantilService {
 
         } catch (fetchError) {
           clearTimeout(timeoutId);
-          if (fetchError.name === 'AbortError') {
+          if ((fetchError as any).name === 'AbortError') {
             throw { message: 'timeout', code: 'NET_001' };
           }
           throw fetchError;
@@ -151,14 +151,14 @@ export class MercantilService {
 
       } catch (error) {
         const mercantilError = MercantilErrorHandler.processError(error, {
-          searchCriteria,
+          transactionData,
           clientInfo,
           endpoint: this.credentials.endpoint
         });
         
         MercantilErrorHandler.logError(mercantilError, {
           operation: 'searchPayment',
-          searchCriteria,
+          transactionData,
           clientInfo
         });
         

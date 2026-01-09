@@ -243,7 +243,7 @@ function simulateBankVerification(paymentData: PaymentData): VerificationResult 
           transactionId: newTransactionId,
           verifiedAmount: paymentData.amount,
           verifiedDate: paymentData.date,
-          bankResponse: `Verificado por ${paymentData.bank}`
+          bankResponse: `Verificado por ${paymentData.senderBank}`
         }
       }
     } else {
@@ -252,7 +252,7 @@ function simulateBankVerification(paymentData: PaymentData): VerificationResult 
         status: 'pending',
         message: 'La verificación está en proceso. Intenta nuevamente en unos minutos.',
         details: {
-          bankResponse: `Procesando en ${paymentData.bank}`
+          bankResponse: `Procesando en ${paymentData.receiverBank}`
         }
       }
     }
