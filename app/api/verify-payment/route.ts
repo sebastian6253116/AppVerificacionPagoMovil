@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { MercantilService, formatVenezuelanPhoneNumber, formatPaymentReference } from '@/lib/mercantil-service';
+import { MercantilService, formatVenezuelanPhoneNumber } from '@/lib/mercantil-service';
 import { MercantilErrorHandler } from '@/lib/mercantil-errors';
+import { supabase } from '@/lib/supabase';
 
 // Esquema de validación para la verificación de pagos
 const verifyPaymentSchema = z.object({
@@ -30,42 +31,17 @@ interface VerificationResult {
     verifiedAmount?: string
     verifiedDate?: string
     bankResponse?: string
+    errorCode?: string
+    timestamp?: string
+    severity?: string
+    retryable?: boolean
+    searchCriteria?: any
+    processingDate?: string
+    guId?: string
+    responseCode?: number
+    transactionData?: any
   }
 }
-
-// Simulación de base de datos de transacciones
-const mockTransactions = [
-  {
-    id: 'TXN001',
-    phoneNumber: '04141234567',
-    amount: '100.00',
-    reference: '123456789',
-    date: '2024-01-15',
-    senderBank: 'Banesco Banco Universal',
-    receiverBank: 'Mercantil Banco',
-    status: 'verified'
-  },
-  {
-    id: 'TXN002',
-    phoneNumber: '04161234567',
-    amount: '250.50',
-    reference: '987654321',
-    date: '2024-01-14',
-    senderBank: 'Mercantil Banco',
-    receiverBank: 'Mercantil Banco',
-    status: 'verified'
-  },
-  {
-    id: 'TXN003',
-    phoneNumber: '04241234567',
-    amount: '75.25',
-    reference: '456789123',
-    date: '2024-01-13',
-    senderBank: 'Banco de Venezuela',
-    receiverBank: 'Mercantil Banco',
-    status: 'pending'
-  }
-]
 
 // Función para verificar pago con Mercantil Banco
 async function verifyMercantilPayment(data: any, clientInfo: { ipAddress: string; userAgent: string }) {
@@ -127,7 +103,7 @@ async function verifyMercantilPayment(data: any, clientInfo: { ipAddress: string
         status: 'error',
         message: c2pResult.infoMsg?.guId ? `Error en solicitud C2P: ${c2pResult.code}` : 'Error procesando solicitud C2P',
         details: {
-          errorCode: c2pResult.code || 'C2P_ERROR',
+          errorCode: c2pResult.code?.toString() || 'C2P_ERROR',
           timestamp: new Date().toISOString(),
           processingDate: c2pResult.processingDate,
           guId: c2pResult.infoMsg?.guId,
@@ -171,34 +147,50 @@ async function verifyMercantilPayment(data: any, clientInfo: { ipAddress: string
   }
 }
 
-// Función para simular verificación con banco (fallback)
-function simulateBankVerification(paymentData: PaymentData): VerificationResult {
+// Función para simular verificación con banco (ahora consulta Supabase)
+async function simulateBankVerification(paymentData: PaymentData): Promise<VerificationResult> {
   // Simular tiempo de procesamiento
-  const processingDelay = Math.random() * 1000 + 500
+  await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500));
   
-  // Buscar transacción en mock database
-  const transaction = mockTransactions.find(t => 
-    t.phoneNumber.replace(/[^0-9]/g, '') === paymentData.phoneNumber.replace(/[^0-9]/g, '') &&
-    t.reference === paymentData.reference
-  )
+  // Buscar transacción en Supabase
+  const { data: transactions, error } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('reference', paymentData.reference)
+    .eq('amount', parseFloat(paymentData.amount))
+    .eq('sender_bank', paymentData.senderBank)
+    .eq('receiver_bank', paymentData.receiverBank);
+
+  if (error) {
+    console.error('Error fetching transactions from Supabase:', error);
+    // Fallback si hay error de conexión, pero en prod debería manejarse mejor
+    return {
+      status: 'error',
+      message: 'Error de conexión con la base de datos de transacciones.',
+      details: {
+        bankResponse: 'Error de sistema',
+        errorCode: error.code
+      }
+    };
+  }
+
+  const transaction = transactions && transactions.length > 0 ? transactions[0] : null;
 
   if (transaction) {
-    // Verificar si los datos coinciden
-    const amountMatches = parseFloat(transaction.amount) === parseFloat(paymentData.amount)
-    const dateMatches = transaction.date === paymentData.date
-    const senderBankMatches = transaction.senderBank === paymentData.senderBank
-    const receiverBankMatches = transaction.receiverBank === paymentData.receiverBank
+    // Verificar si los datos coinciden (aunque ya filtramos en la query, doble check)
+    // Supabase devuelve strings para numeric, parsear si es necesario
+    const dateMatches = transaction.date === paymentData.date; // Asumiendo formato YYYY-MM-DD consistente
 
-    if (amountMatches && dateMatches && senderBankMatches && receiverBankMatches) {
+    if (dateMatches) {
       if (transaction.status === 'verified') {
         return {
           status: 'success',
           message: 'Pago verificado exitosamente. La transacción es válida.',
           details: {
             transactionId: transaction.id,
-            verifiedAmount: transaction.amount,
+            verifiedAmount: transaction.amount.toString(),
             verifiedDate: transaction.date,
-            bankResponse: `Verificado: ${transaction.senderBank} → ${transaction.receiverBank}`
+            bankResponse: transaction.bank_response || `Verificado: ${transaction.sender_bank} → ${transaction.receiver_bank}`
           }
         }
       } else {
@@ -207,85 +199,66 @@ function simulateBankVerification(paymentData: PaymentData): VerificationResult 
           message: 'La transacción está pendiente de verificación por el banco.',
           details: {
             transactionId: transaction.id,
-            bankResponse: `Pendiente: ${transaction.senderBank} → ${transaction.receiverBank}`
+            bankResponse: transaction.bank_response || `Pendiente: ${transaction.sender_bank} → ${transaction.receiver_bank}`
           }
         }
       }
     } else {
       return {
         status: 'error',
-        message: 'Los datos proporcionados no coinciden con los registros del banco.',
+        message: 'La fecha proporcionada no coincide con el registro del banco.',
         details: {
-          bankResponse: 'Datos inconsistentes'
+          bankResponse: 'Fecha incorrecta'
         }
       }
     }
   } else {
-    // Simular diferentes escenarios
-    const random = Math.random()
+    // Si no existe, simulamos la lógica aleatoria anterior para mantener el comportamiento
+    // O idealmente, retornamos que no existe. 
+    // Para mantener compatibilidad con el frontend actual que espera simulación:
+    // Insertamos una nueva transacción simulada para persistencia
     
-    if (random < 0.3) {
-      // 30% probabilidad de transacción no encontrada
-      return {
-        status: 'error',
-        message: 'No se encontró la transacción en los registros del banco.',
-        details: {
-          bankResponse: 'Transacción no encontrada'
-        }
-      }
-    } else if (random < 0.6) {
-      // 30% probabilidad de verificación exitosa (nueva transacción)
-      const newTransactionId = `TXN${Date.now().toString().slice(-6)}`
-      return {
-        status: 'success',
-        message: 'Pago verificado exitosamente. Transacción válida.',
-        details: {
-          transactionId: newTransactionId,
-          verifiedAmount: paymentData.amount,
-          verifiedDate: paymentData.date,
-          bankResponse: `Verificado por ${paymentData.senderBank}`
-        }
-      }
-    } else {
-      // 40% probabilidad de verificación pendiente
-      return {
-        status: 'pending',
-        message: 'La verificación está en proceso. Intenta nuevamente en unos minutos.',
-        details: {
-          bankResponse: `Procesando en ${paymentData.receiverBank}`
-        }
-      }
-    }
-  }
-}
+    const random = Math.random();
+    let status: 'verified' | 'pending' | 'error' = 'error';
+    let message = '';
+    let bankResponse = '';
 
-// Función para validar datos de entrada
-function validatePaymentData(data: any): { isValid: boolean; errors: string[] } {
-  const errors: string[] = []
-  
-  if (!data.phoneNumber || !/^\d{11}$/.test(data.phoneNumber.replace(/[^0-9]/g, ''))) {
-    errors.push('Número de teléfono inválido')
-  }
-  
-  if (!data.amount || isNaN(parseFloat(data.amount)) || parseFloat(data.amount) <= 0) {
-    errors.push('Monto inválido')
-  }
-  
-  if (!data.reference || data.reference.length < 6) {
-    errors.push('Número de referencia inválido')
-  }
-  
-  if (!data.date || !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
-    errors.push('Fecha inválida')
-  }
-  
-  if (!data.bank || data.bank.trim() === '') {
-    errors.push('Banco requerido')
-  }
-  
-  return {
-    isValid: errors.length === 0,
-    errors
+    if (random < 0.3) {
+      status = 'error';
+      message = 'No se encontró la transacción en los registros del banco.';
+      bankResponse = 'Transacción no encontrada';
+    } else if (random < 0.6) {
+      status = 'verified';
+      message = 'Pago verificado exitosamente. Transacción válida.';
+      bankResponse = `Verificado por ${paymentData.senderBank}`;
+    } else {
+      status = 'pending';
+      message = 'La verificación está en proceso. Intenta nuevamente en unos minutos.';
+      bankResponse = `Procesando en ${paymentData.receiverBank}`;
+    }
+
+    if (status !== 'error') {
+       // Guardar la nueva transacción simulada en Supabase para futuras consultas
+       await supabase.from('transactions').insert({
+         reference: paymentData.reference,
+         amount: parseFloat(paymentData.amount),
+         phone: paymentData.phoneNumber,
+         date: paymentData.date,
+         sender_bank: paymentData.senderBank,
+         receiver_bank: paymentData.receiverBank,
+         status: status,
+         bank_response: bankResponse,
+         metadata: { simulated: true }
+       });
+    }
+
+    return {
+      status: status === 'verified' ? 'success' : status,
+      message: message,
+      details: {
+        bankResponse: bankResponse
+      }
+    };
   }
 }
 
@@ -323,9 +296,18 @@ export async function POST(request: NextRequest) {
     // Verificar si el banco receptor es Mercantil Banco
     if (paymentData.receiverBank.toLowerCase().includes('mercantil')) {
       // Usar API real de Mercantil
-      result = await verifyMercantilPayment(paymentData, clientInfo)
+      // Nota: Aquí también se podría guardar el intento en Supabase si se desea auditoría
+      const mercantilResult = await verifyMercantilPayment(paymentData, clientInfo);
+      
+      result = {
+        success: mercantilResult.success,
+        status: mercantilResult.status,
+        message: mercantilResult.message,
+        details: mercantilResult.details
+      };
+
     } else {
-      // Usar simulación para otros bancos
+      // Usar simulación (ahora persistente con Supabase) para otros bancos
       const legacyPaymentData: PaymentData = {
         phoneNumber: paymentData.phone,
         amount: paymentData.amount.toString(),
@@ -335,10 +317,7 @@ export async function POST(request: NextRequest) {
         receiverBank: paymentData.receiverBank
       }
       
-      // Simular tiempo de procesamiento
-      await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000))
-      
-      const legacyResult = simulateBankVerification(legacyPaymentData)
+      const legacyResult = await simulateBankVerification(legacyPaymentData)
       
       // Convertir resultado legacy al nuevo formato
       result = {
@@ -379,13 +358,27 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Endpoint para obtener estadísticas (opcional)
+// Endpoint para obtener estadísticas (ahora desde Supabase)
 export async function GET() {
   try {
+    const { count: totalTransactions } = await supabase
+      .from('transactions')
+      .select('*', { count: 'exact', head: true });
+
+    const { count: verifiedTransactions } = await supabase
+      .from('transactions')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'verified');
+
+    const { count: pendingTransactions } = await supabase
+      .from('transactions')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'pending');
+
     const stats = {
-      totalTransactions: mockTransactions.length,
-      verifiedTransactions: mockTransactions.filter(t => t.status === 'verified').length,
-      pendingTransactions: mockTransactions.filter(t => t.status === 'pending').length,
+      totalTransactions: totalTransactions || 0,
+      verifiedTransactions: verifiedTransactions || 0,
+      pendingTransactions: pendingTransactions || 0,
       supportedBanks: [
         'Banco de Venezuela',
         'Banesco',
