@@ -1,5 +1,5 @@
 -- Tabla para almacenar las transacciones verificadas
-create table transactions (
+create table if not exists transactions (
   id uuid default gen_random_uuid() primary key,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   reference text not null,
@@ -26,3 +26,21 @@ create policy "Public read access"
 create policy "Public insert access"
   on transactions for insert
   with check (true);
+
+-- TABLA DE PRUEBA DE CONEXIÓN
+create table if not exists connection_test (
+  id uuid default gen_random_uuid() primary key,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  message text
+);
+
+-- Insertar un dato de prueba
+insert into connection_test (message) values ('Conexión exitosa desde DokPloy!');
+
+-- Habilitar RLS
+alter table connection_test enable row level security;
+
+-- Política de lectura pública
+create policy "Public read access test"
+  on connection_test for select
+  using (true);
